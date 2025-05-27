@@ -1,2 +1,604 @@
-rgergyreg
-dsfds
+USE AT_BCO;
+GO
+
+-- Monedas
+DROP TABLE IF EXISTS DBO.monedas_TMP;
+SELECT *
+INTO DBO.monedas_TMP
+FROM DBO.CORPDW_monedas WITH (NOLOCK);
+
+-- Agencias
+DROP TABLE IF EXISTS DBO.agencias_TMP;
+SELECT *
+INTO DBO.agencias_TMP
+FROM DBO.CORPDW_agencias WITH (NOLOCK);
+
+-- Activos mes actual
+DROP TABLE IF EXISTS DBO.V_OP_ACTIVO_PROCESADO_SAS_TMP;
+SELECT *
+INTO DBO.V_OP_ACTIVO_PROCESADO_SAS_TMP
+FROM DBO.CORPDW_V_OP_ACTIVO_PROCESADO_SAS WITH (NOLOCK)
+WHERE fecha_cierre = CAST(GETDATE() AS DATE);  -- O reemplazar con valor fijo si se requiere
+
+-- Pasivos mes actual
+DROP TABLE IF EXISTS DBO.V_OP_PASIVO_PROCESADO_SAS_TMP;
+SELECT *
+INTO DBO.V_OP_PASIVO_PROCESADO_SAS_TMP
+FROM DBO.CORPDW_V_OP_PASIVO_PROCESADO_SAS WITH (NOLOCK)
+WHERE fecha_cierre = CAST(GETDATE() AS DATE);
+
+-- Parámetros mes actual
+DROP TABLE IF EXISTS DBO.parametros_TMP;
+SELECT *
+INTO DBO.parametros_TMP
+FROM DBO.CORPDW_PARAMETROS WITH (NOLOCK)
+WHERE fecha_cierre = CAST(GETDATE() AS DATE);
+
+-- Clientes históricos mes actual
+DROP TABLE IF EXISTS DBO.CLIENTESIB_HIST_TMP;
+SELECT
+	c.fecha_cierre,
+	c.nro_cliente,
+	c.nombre_cliente,
+	c.segmento_gerente,
+	c.nombre_gerente,
+	c.cod_gerente_num,
+	c.agencia_gerente
+INTO DBO.CLIENTESIB_HIST_TMP
+FROM DBO.CORPDW_CLIENTESIB_HIST WITH (NOLOCK)
+WHERE c.fecha_cierre = CAST(GETDATE() AS DATE);
+
+
+-- ============================================
+-- FECHA DE CORTE DEL MES ANTERIOR (modificable)
+-- ============================================
+DECLARE @Fecha_Ant DATE = '2025-03-31';  -- Reemplazar con la fecha deseada
+GO
+
+-- Activos mes anterior
+DROP TABLE IF EXISTS DBO.V_OP_ACTIVO_PROCESADO_SAS_ANT_TMP;
+SELECT *
+INTO DBO.V_OP_ACTIVO_PROCESADO_SAS_ANT_TMP
+FROM DBO.CORPDW_V_OP_ACTIVO_PROCESADO_SAS WITH (NOLOCK)
+WHERE fecha_cierre = @Fecha_Ant;
+
+-- Pasivos mes anterior
+DROP TABLE IF EXISTS DBO.V_OP_PASIVO_PROCESADO_SAS_ANT_TMP;
+SELECT *
+INTO DBO.V_OP_PASIVO_PROCESADO_SAS_ANT_TMP
+FROM DBO.CORPDW_V_OP_PASIVO_PROCESADO_SAS WITH (NOLOCK)
+WHERE fecha_cierre = @Fecha_Ant;
+
+-- Parámetros mes anterior
+DROP TABLE IF EXISTS DBO.parametros_ant_TMP;
+SELECT *
+INTO DBO.parametros_ant_TMP
+FROM DBO.CORPDW_PARAMETROS WITH (NOLOCK)
+WHERE fecha_cierre = @Fecha_Ant;
+
+-- Clientes históricos mes anterior
+DROP TABLE IF EXISTS DBO.CLIENTESIB_HIST_ANT_TMP;
+SELECT
+	c.fecha_cierre,
+	c.nro_cliente,
+	c.nombre_cliente,
+	c.segmento_gerente,
+	c.nombre_gerente,
+	c.cod_gerente_num,
+	c.agencia_gerente
+INTO DBO.CLIENTESIB_HIST_ANT_TMP
+FROM DBO.CORPDW_CLIENTESIB_HIST WITH (NOLOCK)
+WHERE fecha_cierre = @Fecha_Ant;
+
+-- ===============================================
+-- SALDO ACTIVO MES ACTUAL (JOIN y agrupación)
+-- ===============================================
+DROP TABLE IF EXISTS DBO.Punta_Activos_Act_TMP;
+SELECT
+	t1.fecha_cierre,
+	t5.agencia_gerente,
+	t3.DLRAGN AS agencia,
+	t5.cod_gerente_num,
+	t5.nombre_gerente,
+	t1.moneda,
+	t1.nro_cliente,
+	t5.nombre_cliente,
+	t5.segmento_gerente,
+	t4.tipo_cambio,
+	t4.tipo_cambio_eu,
+	SUM(t1.saldo_punta) AS saldo_original,
+	t1.segmento_gerente AS segmento_ACTPR
+INTO DBO.Punta_Activos_Act_TMP
+FROM DBO.V_OP_ACTIVO_PROCESADO_SAS_TMP t1
+INNER JOIN DBO.CLIENTESIB_HIST_TMP t5 ON t1.nro_cliente = t5.nro_cliente
+INNER JOIN DBO.agencias_TMP t3 ON t5.agencia_gerente = t3.CDGAGN
+INNER JOIN DBO.parametros_TMP t4 ON t1.fecha_cierre = t4.fecha_cierre
+WHERE t1.saldo_punta > 0
+  AND t1.moneda IN (1, 6900, 62)
+  AND t1.cod_num_producto NOT IN (7, 8, 23)
+GROUP BY t1.fecha_cierre, t5.agencia_gerente, t3.DLRAGN, t5.cod_gerente_num,
+         t5.nombre_gerente, t1.moneda, t1.nro_cliente, t5.nombre_cliente,
+         t5.segmento_gerente, t4.tipo_cambio, t4.tipo_cambio_eu, t1.segmento_gerente;
+
+-- ============================================
+-- CONVERSIÓN A GUARANÍES Y CLASIFICACIÓN AGIR
+-- ============================================
+DROP TABLE IF EXISTS DBO.Punta_Activos_Act_GUA_TMP;
+SELECT
+	fecha_cierre,
+	'Punta_Activos' AS cartera,
+	agencia_gerente,
+	agencia,
+	cod_gerente_num,
+	nombre_gerente,
+	moneda,
+	nro_cliente,
+	nombre_cliente,
+	segmento_gerente,
+	tipo_cambio,
+	tipo_cambio_eu,
+	saldo_original,
+	segmento_ACTPR,
+	CASE 
+		WHEN moneda = 6900 THEN saldo_original
+		WHEN moneda = 1 THEN saldo_original * tipo_cambio
+		WHEN moneda = 62 THEN saldo_original * tipo_cambio_eu
+		ELSE 0
+	END AS saldo_punta_pyg,
+	CASE 
+		WHEN segmento_gerente = 'Q' THEN 'Personal Bank'
+		ELSE NULL
+	END AS tipo_AGIR
+INTO DBO.Punta_Activos_Act_GUA_TMP
+FROM DBO.Punta_Activos_Act_TMP;
+
+-- ============================================
+-- TABLA FINAL DE SALDO ACTUAL AGRUPADO
+-- ============================================
+DROP TABLE IF EXISTS DBO.Punta_Activos_Act_F;
+SELECT
+	fecha_cierre,
+	cartera,
+	tipo_AGIR,
+	agencia,
+	cod_gerente_num,
+	nombre_gerente,
+	segmento_ACTPR,
+	segmento_gerente,
+	nro_cliente,
+	nombre_cliente,
+	SUM(saldo_punta_pyg) AS saldo_punta_pyg
+INTO DBO.Punta_Activos_Act_F
+FROM DBO.Punta_Activos_Act_GUA_TMP
+GROUP BY fecha_cierre, cartera, tipo_AGIR, agencia, cod_gerente_num,
+         nombre_gerente, segmento_ACTPR, segmento_gerente,
+         nro_cliente, nombre_cliente;
+
+-- ===============================================
+-- SALDO ACTIVO MES ANTERIOR (JOIN y agrupación)
+-- ===============================================
+DROP TABLE IF EXISTS DBO.Punta_Activos_Ant_TMP;
+SELECT
+	t1.fecha_cierre,
+	t5.agencia_gerente,
+	t3.DLRAGN AS agencia,
+	t5.cod_gerente_num,
+	t5.nombre_gerente,
+	t1.moneda,
+	t1.nro_cliente,
+	t5.nombre_cliente,
+	t5.segmento_gerente,
+	t4.tipo_cambio,
+	t4.tipo_cambio_eu,
+	SUM(t1.saldo_punta) AS saldo_original,
+	t1.segmento_gerente AS segmento_ACTPR
+INTO DBO.Punta_Activos_Ant_TMP
+FROM DBO.V_OP_ACTIVO_PROCESADO_SAS_ANT_TMP t1
+INNER JOIN DBO.CLIENTESIB_HIST_ANT_TMP t5 ON t1.nro_cliente = t5.nro_cliente
+INNER JOIN DBO.agencias_TMP t3 ON t5.agencia_gerente = t3.CDGAGN
+INNER JOIN DBO.parametros_ant_TMP t4 ON t1.fecha_cierre = t4.fecha_cierre
+WHERE t1.saldo_punta > 0
+  AND t1.moneda IN (1, 6900, 62)
+  AND t1.cod_num_producto NOT IN (7, 8, 23)
+GROUP BY t1.fecha_cierre, t5.agencia_gerente, t3.DLRAGN, t5.cod_gerente_num,
+         t5.nombre_gerente, t1.moneda, t1.nro_cliente, t5.nombre_cliente,
+         t5.segmento_gerente, t4.tipo_cambio, t4.tipo_cambio_eu, t1.segmento_gerente;
+
+-- ============================================
+-- CONVERSIÓN A GUARANÍES Y CLASIFICACIÓN AGIR
+-- ============================================
+DROP TABLE IF EXISTS DBO.Punta_Activos_Ant_GUA_TMP;
+SELECT
+	fecha_cierre,
+	'Punta_Activos' AS cartera,
+	agencia_gerente,
+	agencia,
+	cod_gerente_num,
+	nombre_gerente,
+	moneda,
+	nro_cliente,
+	nombre_cliente,
+	segmento_gerente,
+	tipo_cambio,
+	tipo_cambio_eu,
+	saldo_original,
+	segmento_ACTPR,
+	CASE 
+		WHEN moneda = 6900 THEN saldo_original
+		WHEN moneda = 1 THEN saldo_original * tipo_cambio
+		WHEN moneda = 62 THEN saldo_original * tipo_cambio_eu
+		ELSE 0
+	END AS saldo_punta_pyg,
+	CASE 
+		WHEN segmento_gerente = 'Q' THEN 'Personal Bank'
+		ELSE NULL
+	END AS tipo_AGIR
+INTO DBO.Punta_Activos_Ant_GUA_TMP
+FROM DBO.Punta_Activos_Ant_TMP;
+
+-- ============================================
+-- TABLA FINAL DE SALDO ANTERIOR AGRUPADO
+-- ============================================
+DROP TABLE IF EXISTS DBO.Punta_Activos_Ant_F;
+SELECT
+	fecha_cierre,
+	cartera,
+	tipo_AGIR,
+	agencia,
+	cod_gerente_num,
+	nombre_gerente,
+	segmento_ACTPR,
+	segmento_gerente,
+	nro_cliente,
+	nombre_cliente,
+	SUM(saldo_punta_pyg) AS saldo_punta_pyg
+INTO DBO.Punta_Activos_Ant_F
+FROM DBO.Punta_Activos_Ant_GUA_TMP
+GROUP BY fecha_cierre, cartera, tipo_AGIR, agencia, cod_gerente_num,
+         nombre_gerente, segmento_ACTPR, segmento_gerente,
+         nro_cliente, nombre_cliente;
+
+-- ======================================================
+-- VAR_PUNTA_ACTIVOS_ACT: Clientes con saldo actual (Q)
+-- ======================================================
+DROP TABLE IF EXISTS DBO.VAR_PUNTA_ACTIVOS_ACT;
+SELECT
+	t1.fecha_cierre,
+	t2.fecha_cierre AS fecha_cierre_ant,
+	t1.cartera,
+	t1.agencia,
+	t1.cod_gerente_num AS cod_gte_actual,
+	t1.nombre_gerente AS gerente_actual,
+	t1.nro_cliente,
+	t1.nombre_cliente,
+	t1.segmento_gerente,
+	t1.saldo_punta_pyg AS saldo_punta_pyg_act,
+	t1.segmento_ACTPR,
+	t3.cod_gerente_num AS cod_gerente_ant,
+	t3.nombre_gerente AS gerente_ant,
+	t3.segmento_gerente AS segmento_ant,
+	t2.segmento_ACTPR AS segmento_ACTPR_ant,
+	t2.saldo_punta_pyg AS saldo_punta_pyg_ant
+INTO DBO.VAR_PUNTA_ACTIVOS_ACT
+FROM DBO.Punta_Activos_Act_F t1
+LEFT JOIN DBO.Punta_Activos_Ant_F t2 ON t1.nro_cliente = t2.nro_cliente
+LEFT JOIN DBO.CLIENTESIB_HIST_ANT_TMP t3 ON t1.nro_cliente = t3.nro_cliente
+WHERE t1.segmento_ACTPR = 'Q' OR t2.segmento_ACTPR = 'Q';
+
+-- =========================================================
+-- VAR_PUNTA_ACTIVOS_ANT: Clientes con saldo anterior (Q)
+-- que ya no figuran en el mes actual
+-- =========================================================
+DROP TABLE IF EXISTS DBO.VAR_PUNTA_ACTIVOS_ANT;
+SELECT
+	t3.fecha_cierre,
+	t2.fecha_cierre AS fecha_cierre_ant,
+	t1.cartera,
+	t1.agencia,
+	t3.cod_gerente_num AS cod_gte_actual,
+	t3.nombre_gerente AS gerente_actual,
+	t2.nro_cliente,
+	t2.nombre_cliente,
+	t3.segmento_gerente,
+	t1.saldo_punta_pyg AS saldo_punta_pyg_act,
+	t1.segmento_ACTPR,
+	t2.cod_gerente_num AS cod_gerente_ant,
+	t2.nombre_gerente AS gerente_ant,
+	t2.segmento_gerente AS segmento_ant,
+	t2.segmento_ACTPR AS segmento_ACTPR_ant,
+	t2.saldo_punta_pyg AS saldo_punta_pyg_ant
+INTO DBO.VAR_PUNTA_ACTIVOS_ANT
+FROM DBO.Punta_Activos_Act_F t1
+RIGHT JOIN DBO.Punta_Activos_Ant_F t2 ON t1.nro_cliente = t2.nro_cliente
+LEFT JOIN DBO.CLIENTESIB_HIST_TMP t3 ON t2.nro_cliente = t3.nro_cliente
+WHERE (t1.segmento_ACTPR NOT IN ('Q') AND t2.segmento_ACTPR = 'Q')
+  AND t1.agencia IS NULL;
+
+-- ==================================================
+-- BASE FINAL DE ACTIVOS (ambos escenarios unificados)
+-- ==================================================
+DROP TABLE IF EXISTS DBO.A_VAR_PUNTA_ACTIVOS_Q;
+SELECT * INTO DBO.A_VAR_PUNTA_ACTIVOS_Q
+FROM (
+	SELECT * FROM DBO.VAR_PUNTA_ACTIVOS_ACT
+	UNION ALL
+	SELECT * FROM DBO.VAR_PUNTA_ACTIVOS_ANT
+) AS union_activos;
+
+-- =========================================
+-- 2. Carga CDA actual
+-- =========================================
+DROP TABLE IF EXISTS DBO.A_Cant_CDA_TMP;
+SELECT 
+	t1.fecha_cierre,
+	t1.nro_cliente,
+	t2.nombre_cliente,
+	t1.plazo_dias_cda,
+	t1.fecha_alta,
+	t2.agencia_gerente,
+	t4.DLRAGN AS agencia,
+	t2.cod_gerente_num,
+	t1.id_moneda,
+	t1.nro_operacion,
+	t3.GNOMBG AS nombre_gerente,
+	t5.tipo_cambio,
+	t5.tipo_cambio_eu,
+	SUM(t1.importe_cda) AS t_saldo_punta,
+	t1.fecha_vto,
+	t1.cda_estado
+INTO DBO.A_Cant_CDA_TMP
+FROM DBO.CORPDW_CDA_MAESTRO2 t1
+LEFT JOIN DBO.CORPDW_CLIENTESIB t2 ON t1.nro_cliente = t2.nro_cliente
+LEFT JOIN DBO.CORPDW_GERENTES t3 ON t2.cod_gerente_num = t3.cod_gerente_num
+LEFT JOIN DBO.CORPDW_AGENCIAS t4 ON t2.agencia_gerente = t4.cdgagn
+LEFT JOIN DBO.CORPDW_PARAMETROS t5 ON t1.fecha_cierre = t5.fecha_cierre
+WHERE t1.cda_estado IN (2, 3, 10)
+	AND t1.fecha_cierre = @FECHA_CIERRE
+	AND t1.cda_estado <> 9
+	AND t2.segmento_gerente IN ('Q', 'S', 'P', 'E', 'K')
+GROUP BY t1.fecha_cierre, t1.nro_cliente, t2.nombre_cliente, t1.plazo_dias_cda,
+	t1.fecha_alta, t2.agencia_gerente, t4.DLRAGN, t2.cod_gerente_num, t1.id_moneda,
+	t1.nro_operacion, t3.GNOMBG, t5.tipo_cambio, t5.tipo_cambio_eu,
+	t1.fecha_vto, t1.cda_estado;
+
+-- Conversión a guaraníes y marca vencido
+DROP TABLE IF EXISTS DBO.A_Cant_CDA_FINAL;
+SELECT *,
+	CASE 
+		WHEN id_moneda = 6900 THEN t_saldo_punta
+		WHEN id_moneda = 1 THEN t_saldo_punta * tipo_cambio
+		WHEN id_moneda = 62 THEN t_saldo_punta * tipo_cambio_eu
+		ELSE 0
+	END AS saldo_punta_act_pyg,
+	CASE 
+		WHEN fecha_vto <= @FECHA_CIERRE THEN 'SI'
+		ELSE 'NO'
+	END AS suma
+INTO DBO.A_Cant_CDA_FINAL
+FROM DBO.A_Cant_CDA_TMP;
+
+-- =========================================
+-- 3. Carga CDA mes anterior
+-- =========================================
+DROP TABLE IF EXISTS DBO.A_Cant_CDA_TMP_ANT;
+SELECT 
+	t1.fecha_cierre,
+	t1.nro_cliente,
+	t2.nombre_cliente,
+	t1.plazo_dias_cda,
+	t1.fecha_alta,
+	t2.agencia_gerente,
+	t4.DLRAGN AS agencia,
+	t2.cod_gerente_num,
+	t1.id_moneda,
+	t1.nro_operacion,
+	t3.GNOMBG AS nombre_gerente,
+	t5.tipo_cambio,
+	t5.tipo_cambio_eu,
+	SUM(t1.importe_cda) AS t_saldo_punta,
+	t1.fecha_vto,
+	t1.cda_estado
+INTO DBO.A_Cant_CDA_TMP_ANT
+FROM DBO.CORPDW_CDA_MAESTRO2 t1
+LEFT JOIN DBO.CORPDW_CLIENTESIB t2 ON t1.nro_cliente = t2.nro_cliente
+LEFT JOIN DBO.CORPDW_GERENTES t3 ON t2.cod_gerente_num = t3.cod_gerente_num
+LEFT JOIN DBO.CORPDW_AGENCIAS t4 ON t2.agencia_gerente = t4.cdgagn
+LEFT JOIN DBO.CORPDW_PARAMETROS t5 ON t1.fecha_cierre = t5.fecha_cierre
+WHERE t1.cda_estado IN (2, 3, 10)
+	AND t1.fecha_cierre = @FECHA_ANT
+	AND t1.cda_estado <> 9
+	AND t2.segmento_gerente IN ('Q', 'S', 'P', 'E', 'K')
+GROUP BY t1.fecha_cierre, t1.nro_cliente, t2.nombre_cliente, t1.plazo_dias_cda,
+	t1.fecha_alta, t2.agencia_gerente, t4.DLRAGN, t2.cod_gerente_num, t1.id_moneda,
+	t1.nro_operacion, t3.GNOMBG, t5.tipo_cambio, t5.tipo_cambio_eu,
+	t1.fecha_vto, t1.cda_estado;
+
+-- Conversión anterior
+DROP TABLE IF EXISTS DBO.A_Cant_CDA_FINAL_ANT;
+SELECT *,
+	CASE 
+		WHEN id_moneda = 6900 THEN t_saldo_punta
+		WHEN id_moneda = 1 THEN t_saldo_punta * tipo_cambio
+		WHEN id_moneda = 62 THEN t_saldo_punta * tipo_cambio_eu
+		ELSE 0
+	END AS saldo_punta_act_pyg,
+	CASE 
+		WHEN fecha_vto <= @FECHA_ANT THEN 'SI'
+		ELSE 'NO'
+	END AS suma
+INTO DBO.A_Cant_CDA_FINAL_ANT
+FROM DBO.A_Cant_CDA_TMP_ANT;
+
+-- =========================================
+-- 4. Comparativo y variación
+-- =========================================
+DROP TABLE IF EXISTS DBO.VAR_CDA_TMP;
+SELECT 
+	COALESCE(act.nro_cliente, ant.nro_cliente) AS nro_cliente,
+	COALESCE(act.nombre_cliente, ant.nombre_cliente) AS nombre_cliente,
+	COALESCE(act.nro_operacion, ant.nro_operacion) AS nro_operacion,
+	COALESCE(act.cod_gerente_num, ant.cod_gerente_num) AS cod_gte_actual,
+	COALESCE(act.nombre_gerente, ant.nombre_gerente) AS gerente_actual,
+	ant.cod_gerente_num AS cod_gerente_ant,
+	ant.nombre_gerente AS gerente_ant,
+	ISNULL(act.saldo_punta_act_pyg, 0) AS saldo_punta_act_pyg,
+	ISNULL(ant.saldo_punta_act_pyg, 0) AS saldo_punta_ant_pyg,
+	ISNULL(act.saldo_punta_act_pyg, 0) - ISNULL(ant.saldo_punta_act_pyg, 0) AS variacion,
+	CASE 
+		WHEN ISNULL(act.saldo_punta_act_pyg, 0) - ISNULL(ant.saldo_punta_act_pyg, 0) > 0 THEN 'Aumentó'
+		WHEN ISNULL(act.saldo_punta_act_pyg, 0) - ISNULL(ant.saldo_punta_act_pyg, 0) < 0 THEN 'Disminuyó'
+		ELSE 'Mantiene'
+	END AS desc_variacion,
+	CASE 
+		WHEN ant.cod_gerente_num IS NULL THEN 'N'
+		WHEN act.cod_gerente_num = ant.cod_gerente_num THEN 'N'
+		ELSE 'S'
+	END AS migracion_cartera,
+	act.fecha_cierre AS fecha_cierre_act,
+	ant.fecha_cierre AS fecha_cierre_ant,
+	act.fecha_vto AS fecha_vto_act,
+	ant.fecha_vto AS fecha_vto_ant,
+	act.suma AS suma_act,
+	ant.suma AS suma_ant
+INTO DBO.VAR_CDA_TMP
+FROM DBO.A_Cant_CDA_FINAL act
+FULL OUTER JOIN DBO.A_Cant_CDA_FINAL_ANT ant
+	ON act.nro_cliente = ant.nro_cliente AND act.nro_operacion = ant.nro_operacion;
+
+-- =========================================
+-- 5. Reporte final de saldos vencidos por cliente
+-- =========================================
+DROP TABLE IF EXISTS DBO.REPORTE_CDA_TMP;
+SELECT 
+	nro_cliente,
+	SUM(CASE WHEN suma_act = 'SI' THEN saldo_punta_act_pyg ELSE 0 END) AS saldo_punta_act_vencido,
+	SUM(CASE WHEN suma_ant = 'SI' THEN saldo_punta_ant_pyg ELSE 0 END) AS saldo_punta_ant_vencido
+INTO DBO.REPORTE_CDA_TMP
+FROM DBO.VAR_CDA_TMP
+GROUP BY nro_cliente;
+
+-- (Opcional: filtrar resultados relevantes)
+SELECT *
+FROM DBO.REPORTE_CDA_TMP
+WHERE saldo_punta_act_vencido > 0 OR saldo_punta_ant_vencido > 0;
+
+-- ============================================
+-- PASIVOS - CONSOLIDADO VARIACIÓN PASIVOS (Q)
+-- ============================================
+DROP TABLE IF EXISTS DBO.VAR_PUNTA_PASIVOS_ACT;
+SELECT
+	t1.fecha_cierre,
+	t2.fecha_cierre AS fecha_cierre_ant,
+	t1.cartera,
+	t1.agencia,
+	t1.cod_gerente_num AS cod_gte_actual,
+	t1.nombre_gerente AS gerente_actual,
+	t1.nro_cliente,
+	t1.nombre_cliente,
+	t1.segmento_gerente,
+	t1.saldo_punta_pyg AS saldo_punta_pyg_act,
+	t1.segmento_ACTPR,
+	t3.cod_gerente_num AS cod_gerente_ant,
+	t3.nombre_gerente AS gerente_ant,
+	t3.segmento_gerente AS segmento_ant,
+	t2.segmento_ACTPR AS segmento_ACTPR_ant,
+	t2.saldo_punta_pyg AS saldo_punta_pyg_ant
+INTO DBO.VAR_PUNTA_PASIVOS_ACT
+FROM DBO.Punta_Pasivos_Act_F t1
+LEFT JOIN DBO.Punta_Pasivos_Ant_F t2 ON t1.nro_cliente = t2.nro_cliente
+LEFT JOIN DBO.CLIENTESIB_HIST_ANT_TMP t3 ON t1.nro_cliente = t3.nro_cliente
+WHERE t1.segmento_ACTPR = 'Q' OR t2.segmento_ACTPR = 'Q';
+
+DROP TABLE IF EXISTS DBO.VAR_PUNTA_PASIVOS_ANT;
+SELECT
+	t3.fecha_cierre,
+	t2.fecha_cierre AS fecha_cierre_ant,
+	t1.cartera,
+	t1.agencia,
+	t3.cod_gerente_num AS cod_gte_actual,
+	t3.nombre_gerente AS gerente_actual,
+	t2.nro_cliente,
+	t2.nombre_cliente,
+	t3.segmento_gerente,
+	t1.saldo_punta_pyg AS saldo_punta_pyg_act,
+	t1.segmento_ACTPR,
+	t2.cod_gerente_num AS cod_gerente_ant,
+	t2.nombre_gerente AS gerente_ant,
+	t2.segmento_gerente AS segmento_ant,
+	t2.segmento_ACTPR AS segmento_ACTPR_ant,
+	t2.saldo_punta_pyg AS saldo_punta_pyg_ant
+INTO DBO.VAR_PUNTA_PASIVOS_ANT
+FROM DBO.Punta_Pasivos_Act_F t1
+RIGHT JOIN DBO.Punta_Pasivos_Ant_F t2 ON t1.nro_cliente = t2.nro_cliente
+LEFT JOIN DBO.CLIENTESIB_HIST_TMP t3 ON t2.nro_cliente = t3.nro_cliente
+WHERE (t1.segmento_ACTPR NOT IN ('Q') AND t2.segmento_ACTPR = 'Q')
+  AND t1.agencia IS NULL;
+
+-- Unificar ambos escenarios
+DROP TABLE IF EXISTS DBO.A_VAR_PUNTA_PASIVOS_Q;
+SELECT * INTO DBO.A_VAR_PUNTA_PASIVOS_Q
+FROM (
+	SELECT * FROM DBO.VAR_PUNTA_PASIVOS_ACT
+	UNION ALL
+	SELECT * FROM DBO.VAR_PUNTA_PASIVOS_ANT
+) AS union_pasivos;
+
+-- ============================================
+-- INTEGRACIÓN CON CDA: PASIVOS + VENCIDOS CDA
+-- ============================================
+DROP TABLE IF EXISTS DBO.A_VAR_PUNTA_PASIVOS_Q_EXT;
+SELECT 
+	p.*,
+	ISNULL(cda.saldo_punta_act_vencido, 0) AS saldo_cda_act_vencido,
+	ISNULL(cda.saldo_punta_ant_vencido, 0) AS saldo_cda_ant_vencido
+INTO DBO.A_VAR_PUNTA_PASIVOS_Q_EXT
+FROM DBO.A_VAR_PUNTA_PASIVOS_Q p
+LEFT JOIN DBO.REPORTE_CDA_TMP cda ON p.nro_cliente = cda.nro_cliente;
+
+-- ==========================================================
+-- TABLA FINAL: PASIVOS + CDA SUMADO A LOS SALDOS PYG
+-- ==========================================================
+DROP TABLE IF EXISTS DBO.A_VAR_PUNTA_PASIVOS_Q_FINAL;
+
+SELECT 
+	nro_cliente,
+	fecha_cierre,
+	fecha_cierre_ant,
+	cartera,
+	agencia,
+	cod_gte_actual,
+	gerente_actual,
+	segmento_gerente,
+	segmento_ACTPR,
+	cod_gerente_ant,
+	gerente_ant,
+	segmento_ant,
+	segmento_ACTPR_ant,
+	nombre_cliente,
+
+	-- Saldos individuales
+	ISNULL(saldo_punta_pyg_act, 0) AS saldo_punta_pyg_act,
+	ISNULL(saldo_cda_act_vencido, 0) AS saldo_cda_act_vencido,
+	ISNULL(saldo_punta_pyg_ant, 0) AS saldo_punta_pyg_ant,
+	ISNULL(saldo_cda_ant_vencido, 0) AS saldo_cda_ant_vencido,
+
+	-- Suma total actual y anterior
+	ISNULL(saldo_punta_pyg_act, 0) + ISNULL(saldo_cda_act_vencido, 0) AS saldo_punta_pyg_act_total,
+	ISNULL(saldo_punta_pyg_ant, 0) + ISNULL(saldo_cda_ant_vencido, 0) AS saldo_punta_pyg_ant_total,
+
+	-- Variación absoluta
+	(ISNULL(saldo_punta_pyg_act, 0) + ISNULL(saldo_cda_act_vencido, 0)) -
+	(ISNULL(saldo_punta_pyg_ant, 0) + ISNULL(saldo_cda_ant_vencido, 0)) AS variacion_total,
+
+	-- Descripción de variación
+	CASE 
+		WHEN (ISNULL(saldo_punta_pyg_act, 0) + ISNULL(saldo_cda_act_vencido, 0)) 
+		     - (ISNULL(saldo_punta_pyg_ant, 0) + ISNULL(saldo_cda_ant_vencido, 0)) > 0 THEN 'Aumentó'
+		WHEN (ISNULL(saldo_punta_pyg_act, 0) + ISNULL(saldo_cda_act_vencido, 0)) 
+		     - (ISNULL(saldo_punta_pyg_ant, 0) + ISNULL(saldo_cda_ant_vencido, 0)) < 0 THEN 'Disminuyó'
+		ELSE 'Mantiene'
+	END AS desc_variacion_total
+
+INTO DBO.A_VAR_PUNTA_PASIVOS_Q_FINAL
+FROM DBO.A_VAR_PUNTA_PASIVOS_Q_EXT;
+
