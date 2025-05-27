@@ -626,3 +626,229 @@ Uso de tablas persistentes con sufijo _TMP cuando no hay esquema.
 Eliminación de WITH (NOLOCK) en tablas externas si es necesario.
 Inclusión de comentarios para claridad.
 Conversión de lógica DATA y IF a CASE y SELECT.
+-- Establecer la base de datos
+USE AT_BCO;
+
+-- Declarar variable de fecha
+DECLARE @FECHA_CIERRE AS DATE = GETDATE();
+declare @fecha_ant as date = eomonth(dateadd(month,-2,@FECHA_CIERRE))
+
+
+-- Eliminar tabla si ya existe
+DROP TABLE IF EXISTS #A_Cant_CDA_TMP;
+
+-- Crear tabla con los datos consolidados
+SELECT 
+    t1.FECHA_CIERRE,
+    t1.NRO_CLIENTE,
+ t2.NOMBRE_CLIENTE,
+    t1.PLAZO_DIAS_CDA,
+    t1.FECHA_ALTA,
+    t2.AGENCIA_GERENTE,
+    t4.DLRAGN AS Agencia,
+    t2.COD_GERENTE_NUM,
+    t1.ID_MONEDA,
+    t1.NRO_OPERACION,
+    t3.GNOMBG AS Nombre_Gerente,
+    t5.TIPO_CAMBIO,
+    t5.TIPO_CAMBIO_EU,
+    SUM(t1.IMPORTE_CDA) AS T_Saldo_Punta,
+ T1.FECHA_VTO
+ ,t1.CDA_ESTADO
+INTO #A_Cant_CDA_TMP
+FROM DBO.CORPDW_CDA_MAESTRO2 t1
+LEFT JOIN DBO.CORPDW_CLIENTESIB t2
+    ON  t1.NRO_CLIENTE = t2.NRO_CLIENTE
+LEFT JOIN DBO.CORPDW_GERENTES t3
+    ON t2.COD_GERENTE_NUM = t3.COD_GERENTE_NUM
+LEFT JOIN DBO.CORPDW_AGENCIAS t4
+    ON t2.AGENCIA_GERENTE = t4.CDGAGN
+LEFT JOIN DBO.CORPDW_PARAMETROS t5
+    ON t1.FECHA_CIERRE = t5.FECHA_CIERRE
+WHERE 
+    t1.CDA_ESTADO <> 9 AND
+    --t1.FECHA_VTO BETWEEN @fecha_ant AND @FECHA_CIERRE AND
+    t1.FECHA_CIERRE = @FECHA_CIERRE AND
+    t2.SEGMENTO_GERENTE IN ('Q', 'S', 'P', 'E', 'K')
+ and CDA_ESTADO in (2,3,10)
+GROUP BY 
+    t1.FECHA_CIERRE, t1.NRO_CLIENTE, t2.NOMBRE_CLIENTE, 
+ t1.NRO_OPERACION, 
+    t2.AGENCIA_GERENTE, t4.DLRAGN, t2.COD_GERENTE_NUM, t3.GNOMBG, 
+    t1.PLAZO_DIAS_CDA, t1.FECHA_ALTA, t1.ID_MONEDA,
+    t5.TIPO_CAMBIO, t5.TIPO_CAMBIO_EU,T1.FECHA_VTO,t1.CDA_ESTADO;
+
+
+-- Eliminar tabla final si ya existe
+DROP TABLE IF EXISTS #A_Cant_CDA_FINAL;
+
+---- Crear tabla final con cálculo de saldo en PYG
+SELECT 
+    FECHA_CIERRE,
+    NRO_CLIENTE,
+    NOMBRE_CLIENTE,
+    PLAZO_DIAS_CDA,
+    FECHA_ALTA,
+    AGENCIA_GERENTE,
+    Agencia,
+    COD_GERENTE_NUM,
+    ID_MONEDA,
+    NRO_OPERACION,
+    Nombre_Gerente,
+    TIPO_CAMBIO,
+    TIPO_CAMBIO_EU,
+    T_Saldo_Punta,
+ CDA_ESTADO,
+    CASE 
+        WHEN ID_MONEDA = 6900 THEN T_Saldo_Punta
+        WHEN ID_MONEDA = 1 THEN T_Saldo_Punta * TIPO_CAMBIO
+        WHEN ID_MONEDA = 62 THEN T_Saldo_Punta * TIPO_CAMBIO_EU
+        ELSE 0
+    END AS Saldo_PUNTA_ACT_PYG,
+'SUMA'=
+ CASE 
+  WHEN FECHA_VTO <= @FECHA_CIERRE THEN 'SI'
+  ELSE 'NO'
+ END,
+ FECHA_VTO
+INTO #A_Cant_CDA_FINAL
+FROM #A_Cant_CDA_TMP;
+
+--select * from #A_Cant_CDA_FINAL
+
+---fecha_anterior
+DROP TABLE IF EXISTS #A_Cant_CDA_TMP_ANT;
+
+-- Crear tabla con los datos consolidados
+SELECT 
+    t1.FECHA_CIERRE,
+    t1.NRO_CLIENTE,
+ t2.NOMBRE_CLIENTE,
+    t1.PLAZO_DIAS_CDA,
+    t1.FECHA_ALTA,
+    t2.AGENCIA_GERENTE,
+    t4.DLRAGN AS Agencia,
+    t2.COD_GERENTE_NUM,
+    t1.ID_MONEDA,
+    t1.NRO_OPERACION,
+    t3.GNOMBG AS Nombre_Gerente,
+    t5.TIPO_CAMBIO,
+    t5.TIPO_CAMBIO_EU,
+    SUM(t1.IMPORTE_CDA) AS T_Saldo_Punta,
+ T1.FECHA_VTO
+ ,t1.CDA_ESTADO
+INTO #A_Cant_CDA_TMP_ANT
+FROM DBO.CORPDW_CDA_MAESTRO2 t1
+LEFT JOIN DBO.CORPDW_CLIENTESIB t2
+    ON  t1.NRO_CLIENTE = t2.NRO_CLIENTE
+LEFT JOIN DBO.CORPDW_GERENTES t3
+    ON t2.COD_GERENTE_NUM = t3.COD_GERENTE_NUM
+LEFT JOIN DBO.CORPDW_AGENCIAS t4
+    ON t2.AGENCIA_GERENTE = t4.CDGAGN
+LEFT JOIN DBO.CORPDW_PARAMETROS t5
+    ON t1.FECHA_CIERRE = t5.FECHA_CIERRE
+WHERE 
+    t1.CDA_ESTADO <> 9 AND
+    t1.FECHA_CIERRE = @fecha_ant AND
+    t2.SEGMENTO_GERENTE IN ('Q', 'S', 'P', 'E', 'K')
+ and CDA_ESTADO in (2,3,10)
+GROUP BY 
+    t1.FECHA_CIERRE, t1.NRO_CLIENTE, t2.NOMBRE_CLIENTE, 
+ t1.NRO_OPERACION, 
+    t2.AGENCIA_GERENTE, t4.DLRAGN, t2.COD_GERENTE_NUM, t3.GNOMBG, 
+    t1.PLAZO_DIAS_CDA, t1.FECHA_ALTA, t1.ID_MONEDA,
+    t5.TIPO_CAMBIO, t5.TIPO_CAMBIO_EU,T1.FECHA_VTO,t1.CDA_ESTADO;
+
+
+-- Eliminar tabla final si ya existe
+DROP TABLE IF EXISTS #A_Cant_CDA_FINAL_ANT;
+
+---- Crear tabla final con cálculo de saldo en PYG
+SELECT 
+    FECHA_CIERRE,
+    NRO_CLIENTE,
+    NOMBRE_CLIENTE,
+    PLAZO_DIAS_CDA,
+    FECHA_ALTA,
+    AGENCIA_GERENTE,
+    Agencia,
+    COD_GERENTE_NUM,
+    ID_MONEDA,
+    NRO_OPERACION,
+    Nombre_Gerente,
+    TIPO_CAMBIO,
+    TIPO_CAMBIO_EU,
+    T_Saldo_Punta,
+ CDA_ESTADO,
+    CASE 
+        WHEN ID_MONEDA = 6900 THEN T_Saldo_Punta
+        WHEN ID_MONEDA = 1 THEN T_Saldo_Punta * TIPO_CAMBIO
+        WHEN ID_MONEDA = 62 THEN T_Saldo_Punta * TIPO_CAMBIO_EU
+        ELSE 0
+    END AS Saldo_PUNTA_ACT_PYG,
+'SUMA'=
+ CASE 
+  WHEN FECHA_VTO <= @FECHA_ANT THEN 'SI'
+  ELSE 'NO'
+ END,
+ FECHA_VTO
+INTO #A_Cant_CDA_FINAL_ANT
+FROM #A_Cant_CDA_TMP_ANT;
+
+-- Eliminar tabla de variación si ya existe
+DROP TABLE IF EXISTS #VAR_CDA;
+
+-- Crear tabla de variación
+SELECT 
+    COALESCE(act.NRO_CLIENTE, ant.NRO_CLIENTE) AS NRO_CLIENTE,
+    COALESCE(act.NOMBRE_CLIENTE, ant.NOMBRE_CLIENTE) AS NOMBRE_CLIENTE,
+    COALESCE(act.NRO_OPERACION, ant.NRO_OPERACION) AS NRO_OPERACION,
+    COALESCE(act.COD_GERENTE_NUM, ant.COD_GERENTE_NUM) AS COD_GTE_ACTUAL,
+    COALESCE(act.Nombre_Gerente, ant.Nombre_Gerente) AS GERENTE_ACTUAL,
+    ant.COD_GERENTE_NUM AS COD_GERENTE_ANT,
+    ant.Nombre_Gerente AS GERENTE_ANT,
+    ISNULL(act.Saldo_PUNTA_ACT_PYG, 0) AS Saldo_PUNTA_ACT_PYG,
+    ISNULL(ant.Saldo_PUNTA_ACT_PYG, 0) AS Saldo_PUNTA_ANT_PYG,
+    ISNULL(act.Saldo_PUNTA_ACT_PYG, 0) - ISNULL(ant.Saldo_PUNTA_ACT_PYG, 0) AS Variacion,
+    
+    -- Descripción de la variación
+    CASE 
+        WHEN ISNULL(act.Saldo_PUNTA_ACT_PYG, 0) - ISNULL(ant.Saldo_PUNTA_ACT_PYG, 0) > 0 THEN 'Aumentó'
+        WHEN ISNULL(act.Saldo_PUNTA_ACT_PYG, 0) - ISNULL(ant.Saldo_PUNTA_ACT_PYG, 0) < 0 THEN 'Disminuyó'
+        ELSE 'Mantiene'
+    END AS Desc_Variacion,
+
+    -- Migración de cartera
+    CASE 
+        WHEN ant.COD_GERENTE_NUM IS NULL THEN 'N'
+        WHEN act.COD_GERENTE_NUM = ant.COD_GERENTE_NUM THEN 'N'
+        ELSE 'S'
+    END AS Migracion_Cartera,
+
+    -- Información adicional
+    act.FECHA_CIERRE AS FECHA_CIERRE_ACT,
+    ant.FECHA_CIERRE AS FECHA_CIERRE_ANT,
+    act.FECHA_VTO AS FECHA_VTO_ACT,
+    ant.FECHA_VTO AS FECHA_VTO_ANT,
+    act.SUMA AS SUMA_ACT,
+    ant.SUMA AS SUMA_ANT
+
+INTO #VAR_CDA
+FROM #A_Cant_CDA_FINAL act
+FULL OUTER JOIN #A_Cant_CDA_FINAL_ANT ant
+    ON act.NRO_CLIENTE = ant.NRO_CLIENTE AND act.NRO_OPERACION = ant.NRO_OPERACION;
+
+-- Resultado final
+drop table if exists #reporte_cda
+SELECT 
+    NRO_CLIENTE,
+    SUM(CASE WHEN SUMA_ACT = 'SI' THEN Saldo_PUNTA_ACT_PYG ELSE 0 END) AS Saldo_PUNTA_ACT_VENCIDO,
+    SUM(CASE WHEN SUMA_ANT = 'SI' THEN Saldo_PUNTA_ANT_PYG ELSE 0 END) AS Saldo_PUNTA_ANT_VENCIDO
+into #reporte_cda
+FROM #VAR_CDA
+GROUP BY NRO_CLIENTE
+ORDER BY NRO_CLIENTE DESC;
+
+
+select * from #reporte_cda
+where Saldo_PUNTA_ACT_VENCIDO >0 or Saldo_PUNTA_ANT_VENCIDO >0
