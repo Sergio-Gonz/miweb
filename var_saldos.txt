@@ -1,0 +1,605 @@
+LIBNAME SIG 	meta library='SIG';
+LIBNAME DWH 	meta library='DWH';
+LIBNAME SIGR 	meta library='SIGR';
+
+%Let Fecha_Cierre = today();
+/*%Let Fecha_Cierre = "31mar2025:00:00:00"dt;*/
+%Let Fecha_Ant "31MAR2025:00:00:00"dt;
+
+
+/*==============EXTRAER BASES================*/
+proc sql;
+	create table monedas as 
+		select *
+			from sig.monedas;
+quit;
+
+proc sql;
+	create table AGENCIAS as 
+		select *
+			from PRESUP.AGENCIAS;
+quit;
+
+/*==============MES ACTUAL================*/
+proc sql;
+	create table V_OP_ACTIVO_PROCESADO_SAS as
+		select *
+			FROM SIG.V_OP_ACTIVO_PROCESADO_SAS
+				where fecha_cierre = &Fecha_Cierre;
+quit;
+
+proc sql;
+	create table  V_OP_PASIVO_PROCESADO_SAS as
+		select *
+			FROM SIG.V_OP_PASIVO_PROCESADO_SAS
+				where fecha_cierre = &Fecha_Cierre;
+quit;
+
+proc sql;
+	create table parametros as 
+		select *
+			from sig.parametros p
+				where p.fecha_cierre = &Fecha_Cierre;
+quit;
+
+proc sql;
+	create table CLIENTESIB_HIST as
+		select c.fecha_cierre,c.nro_cliente, c.nombre_cliente, c.segmento_gerente, c.nombre_gerente
+			,c.cod_gerente_num, agencia_gerente
+		from SIG.CLIENTESIB_HIST c
+			where c.fecha_cierre = &Fecha_Cierre;
+quit;
+
+/*==============MES ANTERIOR================*/
+proc sql;
+	create table V_OP_ACTIVO_PROCESADO_SAS_ANT as
+		select *
+			FROM SIG.V_OP_ACTIVO_PROCESADO_SAS
+				where fecha_cierre = &Fecha_Ant;
+quit;
+
+proc sql;
+	create table  V_OP_PASIVO_PROCESADO_SAS_ANT as
+		select *
+			FROM SIG.V_OP_PASIVO_PROCESADO_SAS
+				where fecha_cierre = &Fecha_Ant;
+quit;
+
+proc sql;
+	create table parametros_ant as 
+		select *
+			from sig.parametros p
+				where p.fecha_cierre = &Fecha_Ant;
+quit;
+
+proc sql;
+	create table CLIENTESIB_HIST_ant as
+		select c.fecha_cierre,c.nro_cliente, c.nombre_cliente, c.segmento_gerente, c.nombre_gerente
+			,c.cod_gerente_num, agencia_gerente
+		from SIG.CLIENTESIB_HIST c
+			where c.fecha_cierre = &Fecha_Ant;
+quit;
+
+/*================================= Saldo Punta Activos ==================================== */;
+/*mes_actual*/
+PROC SQL;
+	CREATE TABLE Punta_Activos_Act AS 
+		SELECT t1.FECHA_CIERRE, 
+			t5.AGENCIA_GERENTE, 
+			t3.DLRAGN AS Agencia,
+			t5.COD_GERENTE_NUM, 
+			t5.NOMBRE_GERENTE, 
+			t1.MONEDA,
+			t1.NRO_CLIENTE,
+			t5.NOMBRE_CLIENTE,
+			t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO FORMAT=COMMA8.2,
+			t4.TIPO_CAMBIO_EU FORMAT=COMMA8.2,
+			(sum(t1.saldo_punta)) AS Saldo_Original FORMAT=COMMA12.3,
+			t1.SEGMENTO_GERENTE as Segmento_ACTPR
+		FROM V_OP_ACTIVO_PROCESADO_SAS t1 inner join CLIENTESIB_HIST t5 on 
+			(t1.nro_cliente=t5.nro_cliente)
+
+		inner join MONEDAS t2 on (t1.moneda=t2.cod_numerico)
+		inner join AGENCIAS t3 on (t5.AGENCIA_GERENTE=t3.CDGAGN)
+		inner join PARAMETROS t4 on (t1.Fecha_Cierre=t4.Fecha_Cierre)
+
+		Where t1.Saldo_Punta	>	0					and
+			t1.MONEDA in (1,6900,62)	 			and 
+			t1.cod_num_producto not in (7, 8, 23)
+		GROUP BY t1.FECHA_CIERRE,t5.AGENCIA_GERENTE,t3.DLRAGN,t5.COD_GERENTE_NUM,
+			t5.NOMBRE_GERENTE,t1.MONEDA, t1.NRO_CLIENTE, t5.NOMBRE_CLIENTE, t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO,t4.TIPO_CAMBIO_EU, t1.SEGMENTO_GERENTE;
+QUIT;
+
+/*GUARANIZAR EL SALDO ACTIVO DEL MES ACTUAL*/
+Data Punta_Activos_Act_GUA;
+	Retain Fecha_Cierre Cartera Tipo_AGIR Agencia_Gerente Agencia COD_GERENTE_NUM
+		NOMBRE_GERENTE MONEDA NRO_CLIENTE NOMBRE_CLIENTE SEGMENTO_GERENTE TIPO_CAMBIO 
+		TIPO_CAMBIO_EU Saldo_Original Saldo_Punta_PYG Segmento_ACTPR;
+	Set
+		Punta_Activos_Act;
+	Length tipo_AGIR $19;
+
+	If 	moneda=6900 then
+		Saldo_Punta_PYG=Saldo_Original;
+	else If 	moneda=1 then
+		Saldo_Punta_PYG=((Saldo_Original*TIPO_CAMBIO));
+	else If 	moneda=62 then
+		Saldo_Punta_PYG=((Saldo_Original*TIPO_CAMBIO_EU));
+	Cartera='Punta_Activos';
+
+	/*Definición de Tipo de AGIR ====> Segmentos */
+	if SEGMENTO_GERENTE in ('Q') then
+		tipo_AGIR='Personal Bank';
+Run;
+
+/*BASE FINAL DE SALDO DEL MES ACTUAL*/
+PROC SQL;
+	CREATE TABLE Punta_Activos_Act_F AS 
+		SELECT t1.Fecha_Cierre,
+			t1.Cartera,
+			t1.Tipo_AGIR,
+			t1.Agencia,
+			t1.COD_GERENTE_NUM,
+			t1.NOMBRE_GERENTE,
+			t1.Segmento_ACTPR,
+			t1.SEGMENTO_GERENTE,
+			t1.NRO_CLIENTE,
+			t1.NOMBRE_CLIENTE,
+			SUM(t1.Saldo_Punta_PYG) as Saldo_Punta_PYG
+
+		FROM Punta_Activos_Act_GUA t1
+			GROUP BY t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE
+
+			order by t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE;
+QUIT;
+
+/*cierre anterior*/
+PROC SQL;
+	CREATE TABLE Punta_Activos_Ant AS 
+		SELECT t1.FECHA_CIERRE, 
+			t5.AGENCIA_GERENTE, 
+			t3.DLRAGN AS Agencia,
+			t5.COD_GERENTE_NUM, 
+			t5.NOMBRE_GERENTE, 
+			t1.MONEDA,
+			t1.NRO_CLIENTE,
+			t5.NOMBRE_CLIENTE,
+			t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO FORMAT=COMMA8.2,
+			t4.TIPO_CAMBIO_EU FORMAT=COMMA8.2,
+			(sum(t1.saldo_punta)) AS Saldo_Original FORMAT=COMMA12.3,
+			t1.SEGMENTO_GERENTE as Segmento_ACTPR
+		FROM V_OP_ACTIVO_PROCESADO_SAS_ANT t1 inner join CLIENTESIB_HIST_ANT t5 on 
+			(t1.nro_cliente=t5.nro_cliente)
+
+		inner join MONEDAS t2 on (t1.moneda=t2.cod_numerico)
+		inner join AGENCIAS t3 on (t5.AGENCIA_GERENTE=t3.CDGAGN)
+		inner join PARAMETROS_ANT t4 on (t1.Fecha_Cierre=t4.Fecha_Cierre)
+
+		Where t1.Saldo_Punta	>	0					and
+			t1.MONEDA in (1,6900,62)	 			and 
+			t1.cod_num_producto not in (7, 8, 23)
+
+		GROUP BY t1.FECHA_CIERRE,t5.AGENCIA_GERENTE,t3.DLRAGN,t5.COD_GERENTE_NUM,
+			t5.NOMBRE_GERENTE, t1.MONEDA, t1.NRO_CLIENTE, t5.NOMBRE_CLIENTE, t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO,t4.TIPO_CAMBIO_EU, t1.SEGMENTO_GERENTE;
+QUIT;
+
+/*GUARANIZAR EL SALDO DEL MES ANTERIOR*/
+Data Punta_Activos_Ant_GUA;
+	Retain Fecha_Cierre Cartera Tipo_AGIR Agencia_Gerente Agencia COD_GERENTE_NUM
+		NOMBRE_GERENTE MONEDA NRO_CLIENTE NOMBRE_CLIENTE NOMBRE_CLIENTE SEGMENTO_GERENTE TIPO_CAMBIO 
+		TIPO_CAMBIO_EU Saldo_Original Saldo_Punta_PYG Segmento_ACTPR;
+	Set
+		Punta_Activos_Ant;
+	Length tipo_AGIR $19;
+
+	If 	moneda=6900 then
+		Saldo_Punta_PYG=Saldo_Original;
+	else If 	moneda=1 then
+		Saldo_Punta_PYG=((Saldo_Original*TIPO_CAMBIO));
+	else If 	moneda=62 then
+		Saldo_Punta_PYG=((Saldo_Original*TIPO_CAMBIO_EU));
+	Cartera='Punta_Activos';
+
+	/*Definición de Tipo de AGIR ====> Segmentos */
+	if SEGMENTO_GERENTE in ('Q') then
+		tipo_AGIR='Personal Bank';
+Run;
+
+/*BASE FINAL DE SALDO DEL MES ACTUAL*/
+PROC SQL;
+	CREATE TABLE Punta_Activos_Ant_F AS 
+		SELECT t1.Fecha_Cierre,
+			t1.Cartera,
+			t1.Tipo_AGIR,
+			t1.Agencia,
+			t1.COD_GERENTE_NUM,
+			t1.NOMBRE_GERENTE,
+			t1.Segmento_ACTPR,
+			t1.SEGMENTO_GERENTE,
+			t1.NRO_CLIENTE,
+			t1.NOMBRE_CLIENTE,
+			SUM(t1.Saldo_Punta_PYG) as Saldo_Punta_PYG
+
+		FROM Punta_Activos_Ant_GUA t1
+			GROUP BY t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE
+
+			order by t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE;
+QUIT;
+
+/*CONSOLIDADO DE SALDO MES ACTUAL Y ANTERIOR*/
+PROC SQL;
+	CREATE TABLE WORK.VAR_PUNTA_ACTIVOS_ACT AS 
+		SELECT t1.FECHA_CIERRE, 
+			t3.FECHA_CIERRE AS FECHA_CIERRE_ANT,
+			t1.Cartera, 
+			t1.Agencia, 
+			t1.COD_GERENTE_NUM AS COD_GTE_ACTUAL, 
+			t1.NOMBRE_GERENTE AS GERENTE_ACTUAL, 
+			t1.NRO_CLIENTE,
+			t1.NOMBRE_CLIENTE,
+			t1.SEGMENTO_GERENTE,  
+			t1.Saldo_Punta_PYG AS Saldo_Punta_PYG_Act, 
+			t1.Segmento_ACTPR, 
+			t3.COD_GERENTE_NUM AS COD_GERENTE_ANT,
+			t3.NOMBRE_GERENTE AS GERENTE_ANT,
+			t3.SEGMENTO_GERENTE AS SEGMENTO_ANT,
+			t2.Segmento_ACTPR AS Segmento_ACTPR_ANT,
+			t2.Saldo_Punta_PYG AS Saldo_Punta_PYG_Ant
+
+		FROM WORK.Punta_Activos_Act_F t1
+			LEFT JOIN WORK.Punta_Activos_Ant_F t2 ON (t1.NRO_CLIENTE = t2.NRO_CLIENTE)
+			LEFT JOIN WORK.CLIENTESIB_HIST_ant t3 ON (t1.NRO_CLIENTE = t3.NRO_CLIENTE)
+
+			WHERE t1.Segmento_ACTPR in ('Q') OR t2.Segmento_ACTPR in ('Q')
+
+			group by t1.FECHA_CIERRE,  t2.FECHA_CIERRE, t1.Cartera, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.NRO_CLIENTE, t1.NOMBRE_CLIENTE, t1.SEGMENTO_GERENTE, 
+				t1.Segmento_ACTPR, t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t3.SEGMENTO_GERENTE,
+				t2.Segmento_ACTPR
+
+			order by t1.FECHA_CIERRE,  t2.FECHA_CIERRE, t1.Cartera, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.NRO_CLIENTE, t1.NOMBRE_CLIENTE, t1.SEGMENTO_GERENTE, 
+				t1.Segmento_ACTPR, t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t3.SEGMENTO_GERENTE,
+				t2.Segmento_ACTPR;
+QUIT;
+
+/*CLIENTES QUE EN EL MES ANTERIOR TENÍAN SALDO Y EN EL MES ACTUAL NO*/
+PROC SQL;
+	CREATE TABLE WORK.VAR_PUNTA_ACTIVOS_ANT AS 
+		SELECT t3.FECHA_CIERRE, 
+			t2.FECHA_CIERRE AS FECHA_CIERRE_ANT,
+			t1.Cartera, 
+			t1.Agencia, 
+			t3.COD_GERENTE_NUM AS COD_GTE_ACTUAL, 
+			t3.NOMBRE_GERENTE AS GERENTE_ACTUAL, 
+			t2.NRO_CLIENTE,
+			t2.NOMBRE_CLIENTE,
+			t3.SEGMENTO_GERENTE, 
+			t1.Saldo_Punta_PYG AS Saldo_Punta_PYG_Act, 
+			t1.Segmento_ACTPR, 
+			t2.COD_GERENTE_NUM AS COD_GERENTE_ANT,
+			t2.NOMBRE_GERENTE AS GERENTE_ANT,
+			t2.SEGMENTO_GERENTE AS SEGMENTO_ANT,
+			t2.Segmento_ACTPR AS Segmento_ACTPR_ANT,
+			t2.Saldo_Punta_PYG AS Saldo_Punta_PYG_Ant
+
+		FROM WORK.Punta_Activos_Act_F t1
+			RIGHT JOIN WORK.Punta_Activos_Ant_F t2 ON (t1.NRO_CLIENTE = t2.NRO_CLIENTE)
+				LEFT JOIN WORK.CLIENTESIB_HIST t3 ON (t2.NRO_CLIENTE = t3.NRO_CLIENTE)
+					WHERE (t1.Segmento_ACTPR not in ('Q') AND t2.Segmento_ACTPR in ('Q')) and
+						t1.Agencia is null
+
+					group by t3.FECHA_CIERRE, t2.FECHA_CIERRE, t1.Cartera, t1.Agencia,
+						t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t2.NRO_CLIENTE, t2.NOMBRE_CLIENTE,
+						t3.SEGMENTO_GERENTE, t1.Segmento_ACTPR, t2.COD_GERENTE_NUM,
+						t2.NOMBRE_GERENTE, t2.SEGMENTO_GERENTE, t2.Segmento_ACTPR
+
+					order by t3.FECHA_CIERRE, t2.FECHA_CIERRE, t1.Cartera, t1.Agencia,
+						t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t2.NRO_CLIENTE, t2.NOMBRE_CLIENTE,
+						t3.SEGMENTO_GERENTE, t1.Segmento_ACTPR, t2.COD_GERENTE_NUM,
+						t2.NOMBRE_GERENTE, t2.SEGMENTO_GERENTE, t2.Segmento_ACTPR;
+QUIT;
+
+Data WORK.A_VAR_PUNTA_ACTIVOS_Q; /*Base total de activos*/
+	Set	VAR_PUNTA_ACTIVOS_ACT 
+		VAR_PUNTA_ACTIVOS_ANT;
+
+	If 	Cartera = " " then
+		Cartera = "Punta_Activos";
+Run;
+
+/*================================= Saldo Punta Pasivos ==================================== */;
+/*mes_actual*/
+PROC SQL;
+	CREATE TABLE WORK.Punta_Pasivos_Act AS 
+		SELECT t1.FECHA_CIERRE, 
+			t5.AGENCIA_GERENTE, 
+			t3.DLRAGN AS Agencia,
+			t5.COD_GERENTE_NUM, 
+			t5.NOMBRE_GERENTE, 
+			t1.MONEDA,
+			t1.NRO_CLIENTE,
+			t5.NOMBRE_CLIENTE,
+			t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO FORMAT=COMMA8.2,
+			t4.TIPO_CAMBIO_EU FORMAT=COMMA8.2,
+			(sum(t1.saldo_punta)) AS Saldo_Original FORMAT=COMMA12.3,
+			t1.SEGMENTO_GERENTE as Segmento_ACTPR
+
+		FROM V_OP_PASIVO_PROCESADO_SAS t1 inner join CLIENTESIB_HIST t5 on 
+			(t1.nro_cliente=t5.nro_cliente)
+
+		inner join MONEDAS t2 on (t1.moneda=t2.cod_numerico)
+		inner join AGENCIAS t3 on (t5.AGENCIA_GERENTE=t3.CDGAGN)
+		inner join PARAMETROS t4 on (t1.Fecha_Cierre=t4.Fecha_Cierre)
+
+		Where t1.Saldo_Punta > 0 and
+			t1.MONEDA in (1,6900,62)
+		GROUP BY t1.FECHA_CIERRE,t5.AGENCIA_GERENTE,t3.DLRAGN,t5.COD_GERENTE_NUM,
+			t5.NOMBRE_GERENTE,t1.MONEDA, t1.NRO_CLIENTE, t5.NOMBRE_CLIENTE, t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO,t4.TIPO_CAMBIO_EU, t1.SEGMENTO_GERENTE;
+QUIT;
+
+/*GUARANIZAR EL SALDO ACTIVO DEL MES ACTUAL*/
+Data WORK.Punta_Pasivos_Act_GUA;
+	Retain Fecha_Cierre Cartera Tipo_AGIR Agencia_Gerente Agencia COD_GERENTE_NUM
+		NOMBRE_GERENTE MONEDA NRO_CLIENTE NOMBRE_CLIENTE SEGMENTO_GERENTE TIPO_CAMBIO 
+		TIPO_CAMBIO_EU Saldo_Original Saldo_Punta_PYG Segmento_ACTPR;
+	Set WORK.Punta_Pasivos_Act;
+	Length tipo_AGIR $19;
+
+	If 	moneda=6900 then
+		Saldo_Punta_PYG=(Saldo_Original);
+	else If 	moneda=1 then
+		Saldo_Punta_PYG=(Saldo_Original*TIPO_CAMBIO);
+	else If 	moneda=62 then
+		Saldo_Punta_PYG=(Saldo_Original*TIPO_CAMBIO_EU);
+	Cartera='Punta_Pasivos';
+
+	/*Definición de Tipo de AGIR ====> Segmentos */
+	if SEGMENTO_GERENTE in ('Q') then
+		tipo_AGIR='Personal Bank';
+Run;
+
+/*BASE FINAL DE SALDO DEL MES ACTUAL*/
+PROC SQL;
+	CREATE TABLE Punta_Pasivos_Act_F AS 
+		SELECT t1.Fecha_Cierre,
+			t1.Cartera,
+			t1.Tipo_AGIR,
+			t1.Agencia,
+			t1.COD_GERENTE_NUM,
+			t1.NOMBRE_GERENTE,
+			t1.Segmento_ACTPR,
+			t1.SEGMENTO_GERENTE,
+			t1.NRO_CLIENTE,
+			t1.NOMBRE_CLIENTE,
+			SUM(t1.Saldo_Punta_PYG) as Saldo_Punta_PYG
+
+		FROM Punta_Pasivos_Act_GUA t1
+			GROUP BY t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE
+
+			order by t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE;
+QUIT;
+
+/**********cierre anterior************/
+PROC SQL;
+	CREATE TABLE WORK.Punta_Pasivos_Ant AS 
+		SELECT t1.FECHA_CIERRE,
+			t5.AGENCIA_GERENTE, 
+			t3.DLRAGN AS Agencia,
+			t5.COD_GERENTE_NUM, 
+			t5.NOMBRE_GERENTE, 
+			t1.MONEDA,
+			t1.NRO_CLIENTE,
+			t5.NOMBRE_CLIENTE,
+			t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO FORMAT=COMMA8.2,
+			t4.TIPO_CAMBIO_EU FORMAT=COMMA8.2,
+			(sum(t1.saldo_punta)) AS Saldo_Original FORMAT=COMMA12.3,
+			t1.SEGMENTO_GERENTE as Segmento_ACTPR
+
+		FROM V_OP_PASIVO_PROCESADO_SAS_ANT t1 inner join CLIENTESIB_HIST_ANT t5 on 
+			(t1.nro_cliente=t5.nro_cliente)
+
+		inner join MONEDAS t2 on (t1.moneda=t2.cod_numerico)
+		inner join AGENCIAS t3 on (t5.AGENCIA_GERENTE=t3.CDGAGN)
+		inner join PARAMETROS_ANT t4 on (t1.Fecha_Cierre=t4.Fecha_Cierre)
+
+		Where t1.Saldo_Punta > 0 and
+			t1.MONEDA in (1,6900,62)
+		GROUP BY t1.FECHA_CIERRE, t5.AGENCIA_GERENTE,t3.DLRAGN,t5.COD_GERENTE_NUM,
+			t5.NOMBRE_GERENTE,t1.MONEDA, t1.NRO_CLIENTE, t5.NOMBRE_CLIENTE, t5.SEGMENTO_GERENTE,
+			t4.TIPO_CAMBIO,t4.TIPO_CAMBIO_EU, t1.SEGMENTO_GERENTE;
+QUIT;
+
+/*GUARANIZAR EL SALDO DEL MES ANTERIOR*/
+Data Punta_Pasivos_Ant_GUA;
+	Retain Fecha_Cierre Cartera Tipo_AGIR Agencia_Gerente Agencia COD_GERENTE_NUM
+		NOMBRE_GERENTE MONEDA NRO_CLIENTE NOMBRE_CLIENTE SEGMENTO_GERENTE TIPO_CAMBIO 
+		TIPO_CAMBIO_EU Saldo_Original Saldo_Punta_PYG Segmento_ACTPR;
+	Set
+		Punta_Pasivos_Ant;
+	Length tipo_AGIR $19;
+
+	If 	moneda=6900 then
+		Saldo_Punta_PYG=Saldo_Original;
+	else If 	moneda=1 then
+		Saldo_Punta_PYG=((Saldo_Original*TIPO_CAMBIO));
+	else If 	moneda=62 then
+		Saldo_Punta_PYG=((Saldo_Original*TIPO_CAMBIO_EU));
+	Cartera='Punta_Pasivos';
+
+	/*Definición de Tipo de AGIR ====> Segmentos */
+	if SEGMENTO_GERENTE in ('Q') then
+		tipo_AGIR='Personal Bank';
+Run;
+
+/*BASE FINAL DE SALDO DEL MES ACTUAL*/
+PROC SQL;
+	CREATE TABLE Punta_Pasivos_Ant_F AS 
+		SELECT t1.Fecha_Cierre,
+			t1.Cartera,
+			t1.Tipo_AGIR,
+			t1.Agencia,
+			t1.COD_GERENTE_NUM,
+			t1.NOMBRE_GERENTE,
+			t1.Segmento_ACTPR,
+			t1.SEGMENTO_GERENTE,
+			t1.NRO_CLIENTE,
+			t1.NOMBRE_CLIENTE,
+			SUM(t1.Saldo_Punta_PYG) as Saldo_Punta_PYG
+
+		FROM Punta_Pasivos_Ant_GUA t1
+			GROUP BY t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE
+
+
+			order by t1.Fecha_Cierre, t1.Cartera, t1.Tipo_AGIR, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.Segmento_ACTPR, t1.SEGMENTO_GERENTE, t1.NRO_CLIENTE,
+				t1.NOMBRE_CLIENTE;
+QUIT;
+
+/*CONSOLIDADO DE SALDO MES ACTUAL Y ANTERIOR*/
+PROC SQL;
+	CREATE TABLE WORK.VAR_PUNTA_PASIVOS_ACT AS 
+		SELECT t1.FECHA_CIERRE, 
+			t3.FECHA_CIERRE AS FECHA_CIERRE_ANT,
+			t1.Cartera, 
+			t1.Agencia, 
+			t1.COD_GERENTE_NUM AS COD_GTE_ACTUAL, 
+			t1.NOMBRE_GERENTE AS GERENTE_ACTUAL, 
+			t1.NRO_CLIENTE,
+			t1.NOMBRE_CLIENTE,
+			t1.SEGMENTO_GERENTE,  
+			t1.Saldo_Punta_PYG AS Saldo_Punta_PYG_Act, 
+			t1.Segmento_ACTPR, 
+			t3.COD_GERENTE_NUM AS COD_GERENTE_ANT,
+			t3.NOMBRE_GERENTE AS GERENTE_ANT,
+			t3.SEGMENTO_GERENTE AS SEGMENTO_ANT,
+			t2.Segmento_ACTPR AS Segmento_ACTPR_ANT,
+			t2.Saldo_Punta_PYG AS Saldo_Punta_PYG_Ant
+
+		FROM WORK.Punta_Pasivos_Act_F t1
+			LEFT JOIN WORK.Punta_Pasivos_Ant_F t2 ON (t1.NRO_CLIENTE = t2.NRO_CLIENTE)
+			LEFT JOIN WORK.CLIENTESIB_HIST_ant t3 ON (t1.NRO_CLIENTE = t3.NRO_CLIENTE)
+
+			WHERE t1.Segmento_ACTPR in ('Q') OR t2.Segmento_ACTPR in ('Q')
+
+			group by t1.FECHA_CIERRE, t2.FECHA_CIERRE, t1.Cartera, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.NRO_CLIENTE, t1.NOMBRE_CLIENTE, t1.SEGMENTO_GERENTE, 
+				t1.Segmento_ACTPR, t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t3.SEGMENTO_GERENTE,
+				t2.Segmento_ACTPR
+
+			order by t1.FECHA_CIERRE,  t2.FECHA_CIERRE, t1.Cartera, t1.Agencia, t1.COD_GERENTE_NUM, 
+				t1.NOMBRE_GERENTE, t1.NRO_CLIENTE, t1.NOMBRE_CLIENTE, t1.SEGMENTO_GERENTE, 
+				t1.Segmento_ACTPR, t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t3.SEGMENTO_GERENTE,
+				t2.Segmento_ACTPR;
+QUIT;
+
+/*CLIENTES QUE EN EL MES ANTERIOR TENÍAN SALDO Y EN EL MES ACTUAL NO*/
+PROC SQL;
+	CREATE TABLE WORK.VAR_PUNTA_PASIVOS_ANT AS 
+		SELECT t3.FECHA_CIERRE, 
+			t2.FECHA_CIERRE AS FECHA_CIERRE_ANT, 
+			t1.Cartera, 
+			t1.Agencia, 
+			t3.COD_GERENTE_NUM AS COD_GTE_ACTUAL, 
+			t3.NOMBRE_GERENTE AS GERENTE_ACTUAL, 
+			t2.NRO_CLIENTE,
+			t2.NOMBRE_CLIENTE,
+			t3.SEGMENTO_GERENTE, 
+			t1.Saldo_Punta_PYG AS Saldo_Punta_PYG_Act, 
+			t1.Segmento_ACTPR, 
+			t2.COD_GERENTE_NUM AS COD_GERENTE_ANT,
+			t2.NOMBRE_GERENTE AS GERENTE_ANT,
+			t2.SEGMENTO_GERENTE AS SEGMENTO_ANT,
+			t2.Segmento_ACTPR AS Segmento_ACTPR_ANT,
+			t2.Saldo_Punta_PYG AS Saldo_Punta_PYG_Ant
+
+		FROM WORK.Punta_Pasivos_Act_F t1
+			RIGHT JOIN WORK.Punta_Pasivos_Ant_F t2 ON (t1.NRO_CLIENTE = t2.NRO_CLIENTE)
+				LEFT JOIN WORK.CLIENTESIB_HIST t3 ON (t2.NRO_CLIENTE = t3.NRO_CLIENTE)
+					WHERE (t1.Segmento_ACTPR not in ('Q') AND t2.Segmento_ACTPR in ('Q')) and
+						t1.Agencia is null
+
+					group by t3.FECHA_CIERRE, t2.FECHA_CIERRE, t1.Cartera, t1.Agencia, 
+						t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t2.NRO_CLIENTE, t2.NOMBRE_CLIENTE, 
+						t3.SEGMENTO_GERENTE, t1.Segmento_ACTPR, t2.COD_GERENTE_NUM, t2.NOMBRE_GERENTE, 
+						t2.SEGMENTO_GERENTE, t2.Segmento_ACTPR
+
+					order by t3.FECHA_CIERRE, t2.FECHA_CIERRE, t1.Cartera, t1.Agencia, 
+						t3.COD_GERENTE_NUM, t3.NOMBRE_GERENTE, t2.NRO_CLIENTE, t2.NOMBRE_CLIENTE,
+						t3.SEGMENTO_GERENTE, t1.Segmento_ACTPR, t2.COD_GERENTE_NUM, t2.NOMBRE_GERENTE, 
+						t2.SEGMENTO_GERENTE, t2.Segmento_ACTPR;
+QUIT;
+
+Data WORK.A_VAR_PUNTA_PASIVOS_Q; /*Base total de pasivos*/
+	Set VAR_PUNTA_PASIVOS_ACT 
+		VAR_PUNTA_PASIVOS_ANT;
+
+	If 	Cartera = " " then
+		Cartera = "Punta_Pasivos";
+Run;
+
+Data WORK.VARIACION_SALDOS_Q; /*Base total de activos y pasivos ==== EXPORTAR ===*/
+	RETAIN FECHA_CIERRE	FECHA_CIERRE_ANT Cartera NRO_CLIENTE NOMBRE_CLIENTE	GERENTE_ACTUAL 
+		GERENTE_ANT Saldo_Punta_PYG_Act	Saldo_Punta_PYG_Ant	Variacion Desc_Variacion 
+		Migración_Cartera Agencia COD_GTE_ACTUAL SEGMENTO_GERENTE Segmento_ACTPR COD_GERENTE_ANT 
+		SEGMENTO_ANT Segmento_ACTPR_ANT;
+	Set A_VAR_PUNTA_ACTIVOS_Q 
+		A_VAR_PUNTA_PASIVOS_Q;
+
+	If 	Saldo_Punta_PYG_Act = "" then
+		Saldo_Punta_PYG_Act = 0;
+
+	If 	Saldo_Punta_PYG_Ant = "" then
+		Saldo_Punta_PYG_Ant = 0;
+
+	/*VARIACION DE SALDO*/
+	Variacion = Saldo_Punta_PYG_Act - Saldo_Punta_PYG_Ant;
+
+	/*AUMENTO, CAIDA DE SALDO*/
+	If 	Variacion = 0 then
+		Desc_Variacion = "Mantiene ";
+	else if Variacion > 0 then
+		Desc_Variacion = "Aumentó ";
+	else if Variacion < 0 then
+		Desc_Variacion = "Disminuyó";
+
+	/*MIGRACIÓN DE CARTERA*/
+	If 	COD_GERENTE_ANT = "" then
+		Migración_Cartera = "N";
+	else if COD_GTE_ACTUAL = COD_GERENTE_ANT then
+		Migración_Cartera = "N";
+	else if COD_GTE_ACTUAL <> GERENTE_ANT then
+		Migración_Cartera = "S";
+Run;
+
+/*CLIENTES QUE EN EL MES ANTERIOR TENÍAN SALDO Y EN EL MES ACTUAL NO*/
+PROC SQL;
+	CREATE TABLE WORK.VARIACION_SALDOS_Q AS 
+		SELECT FECHA_CIERRE, FECHA_CIERRE_ANT, Cartera, NRO_CLIENTE, NOMBRE_CLIENTE,
+			GERENTE_ACTUAL, GERENTE_ANT, Saldo_Punta_PYG_Act, Saldo_Punta_PYG_Ant,
+			Variacion, Desc_Variacion, Migración_Cartera, Agencia, COD_GTE_ACTUAL,
+			SEGMENTO_GERENTE, Segmento_ACTPR, COD_GERENTE_ANT, SEGMENTO_ANT,
+			Segmento_ACTPR_ANT
+		FROM WORK.VARIACION_SALDOS_Q;
+QUIT;
