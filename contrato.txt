@@ -1,30 +1,175 @@
-CARTA DE RENUNCIA
-Asunción, ….. de …………. de 2025
+-- ==============================================
+-- SP COMPLETO: VARIACIÓN ACTIVOS INCLUYENDO ALTAS Y BAJAS
+-- ==============================================
+
+CREATE OR ALTER PROCEDURE dbo.sp_calcular_saldo_activos_variacion
+
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+
+ Declare @fecha_actual as DATE = getdate();
+    Declare @fecha_anterior as DATE = EOMONTH(DATEADD(MONTH, -((MONTH(@fecha_actual) - 1) % 3 + 1), @fecha_actual));
 
 
-Señores.
-…………………………………..
-Presente
-
-De mi consideración:
-Me dirijo a ustedes para saludarles y comunicarles mi decisión irrevocable de terminar mi relación de dependencia laboral, renunciando de manera voluntaria al puesto que ocupo dentro de la empresa, estaré cumpliendo mis funciones hasta la fecha 13/06/2025.
-
-Agradecido por la confianza depositada en mí y las múltiples oportunidades que me brindaron desde el primer día, me despido muy atentamente.
+        -- ==============================================
+        -- CTEs BASE PARA ACTUAL Y ANTERIOR CON AGRUPACIÓN
+        -- ==============================================
+ DROP TABLE IF EXISTS dbo.Saldo_Activo_Actual;
+ DROP TABLE IF EXISTS dbo.Saldo_Activo_Ant;
+ DROP TABLE IF EXISTS dbo.VAR_SALDO_ACTIVOS;
 
 
-Sin otro particular, les saludo atentamente.
+        WITH base_actual AS (
+            SELECT 
+                t1.fecha_cierre,
+                'Punta_Activos' AS cartera,
+                t5.nro_cliente,
+                t1.moneda,
+                t1.saldo_punta AS saldo_original,
+                t1.segmento_gerente AS segmento_actpr,
+                t5.segmento_gerente,
+                t5.nombre_cliente,
+                t5.cod_gerente_num,
+                t5.nombre_gerente,
+                t5.agencia_gerente,
+                t3.dlragn AS agencia,
+                t4.tipo_cambio,
+                t4.tipo_cambio_eu,
+                t2.ssegno AS tipo_agir
+            FROM dbo.CORPDW_CLIENTESIB t5
+            INNER JOIN dbo.CORPDW_OP_ACTIVO_PROCESADO_DIARIO t1  ON t5.nro_cliente = t1.nro_cliente
+            INNER JOIN dbo.CORPDW_AGENCIAS t3 ON t5.agencia_gerente = t3.cdgagn
+            INNER JOIN dbo.CORPDW_PARAMETROS t4 ON t1.fecha_cierre = t4.fecha_cierre
+            INNER JOIN dbo.CORPDW_SEGMENTOS t2 ON t1.segmento_gerente = t2.ssegme
+            WHERE t1.fecha_cierre = @fecha_actual
+              AND t1.saldo_punta > 0
+              AND t1.moneda IN (1, 6900, 62)
+              AND t1.cod_num_producto NOT IN ( 7,8, 23)
+        ),
+
+        actual_converted AS (
+            SELECT 
+                fecha_cierre,
+                cartera,
+                nro_cliente,
+                segmento_gerente,
+                segmento_actpr,
+                nombre_cliente,
+                cod_gerente_num,
+                nombre_gerente,
+                agencia_gerente,
+                agencia,
+                tipo_agir,
+                SUM(dbo.fn_convertir_pyg(isnull(saldo_original,0),isnull(moneda,0), isnull(tipo_cambio,0), isnull(tipo_cambio_eu,0))) AS saldo_punta_pyg
+            FROM base_actual
+            GROUP BY 
+                fecha_cierre, cartera, nro_cliente, segmento_gerente, segmento_actpr, 
+                nombre_cliente, cod_gerente_num, nombre_gerente, agencia_gerente, agencia, tipo_agir
+        )
+
+ select * 
+ into dbo.Saldo_Activo_Actual
+ from actual_converted;
+
+  with base_anterior AS (
+            SELECT 
+                t1.fecha_cierre,
+                'Punta_Activos' AS cartera,
+                t5.nro_cliente,
+                t1.moneda,
+                t1.saldo_punta AS saldo_original,
+                t1.segmento_gerente AS segmento_actpr,
+                t5.segmento_gerente,
+                t5.nombre_cliente,
+                t5.cod_gerente_num,
+                t5.nombre_gerente,
+                t5.agencia_gerente,
+                t3.dlragn AS agencia,
+                t4.tipo_cambio,
+                t4.tipo_cambio_eu,
+                t2.ssegno AS tipo_agir
+            FROM dbo.CORPDW_CLIENTESIB_2025 t5
+            INNER JOIN dbo.CORPDW_OP_ACTIVO_PROCESADO_DIARIO t1 ON t1.nro_cliente = t5.nro_cliente AND t5.fecha_cierre = @fecha_anterior
+            INNER JOIN dbo.CORPDW_AGENCIAS t3 ON t5.agencia_gerente = t3.cdgagn
+            INNER JOIN dbo.CORPDW_PARAMETROS t4 ON t1.fecha_cierre = t4.fecha_cierre
+            INNER JOIN dbo.CORPDW_SEGMENTOS t2 ON t1.segmento_gerente = t2.ssegme
+            WHERE t1.fecha_cierre = @fecha_anterior
+              AND t1.saldo_punta > 0
+              AND t1.moneda IN (1, 6900, 62)
+              AND t1.cod_num_producto NOT IN (7, 8, 23)
+        ),
+
+        anterior_converted AS (
+            SELECT 
+                fecha_cierre,
+                cartera,
+                nro_cliente,
+                segmento_gerente,
+                segmento_actpr,
+                nombre_cliente,
+                cod_gerente_num,
+                nombre_gerente,
+                agencia_gerente,
+                agencia,
+                tipo_agir,
+                SUM(dbo.fn_convertir_pyg(isnull(saldo_original,0),isnull(moneda,0), isnull(tipo_cambio,0), isnull(tipo_cambio_eu,0))) AS saldo_punta_pyg
+            FROM base_anterior
+            GROUP BY 
+                fecha_cierre, cartera, nro_cliente, segmento_gerente, segmento_actpr, 
+                nombre_cliente, cod_gerente_num, nombre_gerente, agencia_gerente, agencia, tipo_agir
+        )
+
+  select * 
+  into dbo.Saldo_Activo_Ant
+  from anterior_converted;
 
 
-                    ______________________
-                         ……………………………………
-                                        C.I. Nº 
+ with  variacion_full AS (
+            SELECT 
+                ISNULL(a.fecha_cierre, @fecha_actual) AS fecha_cierre,
+                ISNULL(b.fecha_cierre, '') AS fecha_cierre_ant,
+                ISNULL(a.cartera, b.cartera) AS cartera,
+    coalesce(a.nro_cliente, b.nro_cliente) AS nro_cliente,
+                coalesce(a.nombre_cliente, b.nombre_cliente) AS nombre_cliente,
+                a.nombre_gerente as GERENTE_ACTUAL,
+    b.nombre_gerente AS GERENTE_ANT,
+    ISNULL(a.saldo_punta_pyg,0) AS saldo_punta_pyg_act,
+                ISNULL(b.saldo_punta_pyg,0) AS saldo_punta_pyg_ant,
+    ISNULL(a.saldo_punta_pyg, 0) - ISNULL(b.saldo_punta_pyg, 0) AS variacion,
+                CASE
+                    WHEN ISNULL(a.saldo_punta_pyg, 0) - ISNULL(b.saldo_punta_pyg, 0) > 0 THEN 'Aumentó'
+                    WHEN ISNULL(a.saldo_punta_pyg, 0) - ISNULL(b.saldo_punta_pyg, 0) < 0 THEN 'Disminuyó'
+                    ELSE 'Mantiene'
+                END AS desc_variacion,
+    CASE
+                    WHEN b.cod_gerente_num IS NULL THEN 'N'
+                    WHEN a.cod_gerente_num = b.cod_gerente_num THEN 'N'
+                    ELSE 'S'
+                END AS migracion_cartera,
+                coalesce(a.agencia, b.agencia) AS agencia,
+    ISNULL(CAST(a.cod_gerente_num AS CHAR(10)),'') as COD_GERENTE_ACT,
+                ISNULL(a.segmento_gerente, '') AS segmento_gerente,
+                ISNULL(a.segmento_actpr,'') AS segmento_actpr,
+    ISNULL(CAST(b.cod_gerente_num AS CHAR(10)),'') as COD_GERENTE_ant,
+    ISNULL(b.segmento_gerente,'') AS SEGMENTO_ANT,
+                ISNULL(b.segmento_actpr,'') AS segmento_actpr_ant, 
+    'FECHA_INGRESO'= CAST(GETDATE() AS datetime)
+            FROM dbo.Saldo_Activo_Actual a
+            FULL outer JOIN dbo.Saldo_Activo_Ant b
+            ON a.nro_cliente = b.nro_cliente
+        )
 
-	
+        SELECT *
+  into dbo.VAR_SALDO_ACTIVOS
+        FROM variacion_full
+        WHERE (segmento_actpr = 'Q' OR segmento_actpr_ant = 'Q');
 
-Se deja expresa constancia que …………………………………… ha renunciado formal y voluntariamente a la firma ……………………….., por lo tanto, manifestamos que la presente carta de renuncia no adolece en ningún vicio del consentimiento.
-
-
-
-   TESTIGO:     				 		TESTIGO:
-   C.I.Nº:                        				  	             C.I.Nº:
-fg
+    END TRY
+    BEGIN CATCH
+        DECLARE @msg NVARCHAR(MAX) = ERROR_MESSAGE();
+        RAISERROR('Error en sp_calcular_saldo_activos_variacion: %s', 16, 1, @msg);
+    END CATCH
+END;
+GO
